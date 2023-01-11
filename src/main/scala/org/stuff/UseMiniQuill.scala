@@ -8,12 +8,18 @@ object UseMiniQuill {
   case class Address(fk: Int, street: String)
 
   def main(args: Array[String]):Unit = {
+
+    val i = 123
+
     inline def q = quote(
       for {
+        ii <- query[Int]
         p <- query[Person]
-        a <- query[Address] if (p.id == a.fk)
+        a <- query[Address] if (p.id == i)
       } yield (p.firstName, a.street)
     )
+
+    // //
 
     println(q)
   }
