@@ -11,6 +11,40 @@ object Extractors:
     !ownershipChain(term).contains(Symbol.spliceOwner)
   end isTermExternal
 
+  object ExternalIdent:
+    def unapply(using Quotes)(term: quotes.reflect.Tree): Option[String] =
+      import quotes.reflect.*
+      term match
+        case id: Ident if (isTermExternal(id)) => Some(id.name)
+        case _ => None
+
+  enum IdentType:
+    case Raw
+    case Quoted
+    case Dynamic
+
+  def identType(using Quotes)(i: quotes.reflect.Ident) =
+    import quotes.reflect._
+    import Ast.Quoted
+    i.tpe.asType match
+      case '[Int] => IdentType.Raw
+      case '[Long] => IdentType.Raw
+      case '[Short] => IdentType.Raw
+      case '[Double] => IdentType.Raw
+      case '[Float] => IdentType.Raw
+      case '[Boolean] => IdentType.Raw
+      case '[Byte] => IdentType.Raw
+      case '[String] => IdentType.Raw
+      case '[Quoted[Int]] => IdentType.Quoted
+      case '[Quoted[Long]] => IdentType.Quoted
+      case '[Quoted[Short]] => IdentType.Quoted
+      case '[Quoted[Double]] => IdentType.Quoted
+      case '[Quoted[Float]] => IdentType.Quoted
+      case '[Quoted[Boolean]] => IdentType.Quoted
+      case '[Quoted[Byte]] => IdentType.Quoted
+      case '[Quoted[String]] => IdentType.Quoted
+      case _ => IdentType.Dynamic
+
   def ownershipChain(using Quotes)(term: quotes.reflect.Term): List[quotes.reflect.Symbol] =
     import quotes.reflect.*
     def ownershipChainRecurse(sym: Symbol, accum: List[Symbol]): List[Symbol] =
@@ -51,6 +85,29 @@ object Extractors:
 
     def apply(using Quotes)(term: quotes.reflect.Term) = Untype.unapply(term).get
 
+  object ApplyMatroshkaTerm:
+    private object ApplyThing:
+      def unapply(using Quotes)(term: quotes.reflect.Term) =
+        import quotes.reflect.*
+        term match
+          case Apply(core, _) => Some(core)
+          case TypeApply(core, _) => Some(core)
+          case Typed(core, _) => Some(core)
+          case _ => None
+
+    def recurse(using Quotes)(innerTerm: quotes.reflect.Term): quotes.reflect.Term =
+      import quotes.reflect.*
+      innerTerm match
+        case ApplyThing(innerTree) => recurse(innerTree)
+        case other => other
+
+    def unapply(using Quotes)(term: quotes.reflect.Term): Option[quotes.reflect.Term] =
+      import quotes.reflect.*
+      term match
+        case ApplyThing(tree) => Some(recurse(tree))
+        case other => None
+  end ApplyMatroshkaTerm
+
   object TypedMatroshkaTerm:
     def recurse(using Quotes)(innerTerm: quotes.reflect.Term): quotes.reflect.Term =
       import quotes.reflect.*
@@ -63,6 +120,7 @@ object Extractors:
       term match
         case Typed(tree, _) => Some(recurse(tree))
         case other => None
+  end TypedMatroshkaTerm
 
   object Unseal:
     def unapply(expr: Expr[_])(using Quotes): Option[quotes.reflect.Term] =

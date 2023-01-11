@@ -3,73 +3,11 @@ package org.stuff
 import scala.quoted._
 
 object MiniQuill:
-
-  sealed trait Ast
-  case class Entity(name:String) extends Ast
-  case class Ident(name:String) extends Ast
-  case class Filter(query:Ast, alias:Ident, body: Ast) extends Ast
-  case class Map(query:Ast, alias:Ident, body: Ast) extends Ast
-  case class FlatMap(query:Ast, alias:Ident, body: Ast) extends Ast
-  case class Property(ast: Ast, name: String) extends Ast
-  case class Tuple(values: List[Ast]) extends Ast
-  case class Constant(value: Any) extends Ast
-  case class Function(params: List[Ident], body: Ast) extends Ast
-  case class FunctionApply(function: Ast, values: List[Ast]) extends Ast
-  case class Block(statements: List[Ast]) extends Ast
-  case class Val(name: Ident, body: Ast) extends Ast
-  sealed trait Vase extends Ast
-  object Vase:
-    case class Brandished(content: Expr[Ast]) extends Vase
-    case class Sheathed(content: Ast) extends Vase
-
-  def containsVase(ast: Ast): Boolean =
-    ast match
-      case Entity(name) => false
-      case Ident(name) => false
-      case Filter(query, alias, body) => containsVase(query) || containsVase(body)
-      case Map(query, alias, body) => containsVase(query) || containsVase(body)
-      case FlatMap(query, alias, body) => containsVase(query) || containsVase(body)
-      case Property(ast, name) => containsVase(ast)
-      case Tuple(values) => values.exists(containsVase(_))
-      case Constant(value) => false
-      case Function(params, body) => containsVase(ast)
-      case FunctionApply(function, values) => containsVase(function) || values.exists(containsVase(_))
-      case Block(statements) => statements.exists(containsVase(_))
-      case Val(name, body) => containsVase(body)
-      case BinaryOperation(left, op, right) => containsVase(left) || containsVase(right)
-      case Vase.Brandished(content) => true
-      case Vase.Sheathed(content) => true
-
-
-  sealed trait Operator
-  object Operator:
-    case object `==` extends Operator
-    case object `&&` extends Operator
-    case object `||` extends Operator
-    case object `+` extends Operator
-    case object `-` extends Operator
-    case object `*` extends Operator
-    case object `/` extends Operator
-
-  sealed trait Liveness
-  object Liveness:
-    case object Static extends Liveness
-    case object Dynamic extends Liveness
-
-  case class BinaryOperation(left:Ast, op:Operator, right:Ast) extends Ast
-
-  case class Quoted[T](ast: Ast, liveness: Liveness):
-    def unquote: T = throw new IllegalArgumentException("Only a compile-time-construct")
-
-  class Query[T] {
-    def filter(e:T => Boolean): Query[T] 	    = throw new IllegalArgumentException("This can only be used inside a quoted block")
-    def withFilter(e:T => Boolean): Query[T] 	    = throw new IllegalArgumentException("This can only be used inside a quoted block")
-    def map[R](e:T => R): Query[R]     			  = throw new IllegalArgumentException("This can only be used inside a quoted block")
-    def flatMap[R](e:T => Query[R]): Query[R] = throw new IllegalArgumentException("This can only be used inside a quoted block")
-  }
+  import Ast._
 
   object Dsl {
-    def query[T]: Query[T] = throw new IllegalArgumentException("This can only be used inside a quoted block")
+
+    def query[T]: Query[T] = failNotQuoted("query[T]")
 
     inline def unquote[T](inline quoted:Quoted[T]): T = ${ unquoteImpl[T]('quoted) }
     def unquoteImpl[T:Type](quoted: Expr[Quoted[T]])(using Quotes): Expr[T] = {
@@ -98,7 +36,7 @@ object MiniQuill:
                   Unlifter(astExpr)
                 case Liveness.Dynamic =>
                   report.warning("Using a quotation that has Dynamic Liveness. Whole AST be wrapped into a vase.")
-                  Vase.Brandished(astExpr)
+                  Vase.RuntimeExpression(astExpr)
 
             case '{ query[t] } => Entity(TypeRepr.of[t].classSymbol.get.name)
             case '{ ($query: Query[t]).filter(${Lambda1(alias, body)}) } => Filter(astParse(query), Ident(alias), astParse(body))
@@ -128,41 +66,15 @@ object MiniQuill:
 
             case id @ Unseal(i @ TIdent(x)) =>
               val owner = Symbol.spliceOwner
-
-              enum IdentType:
-                case Raw
-                case Quoted
-                case Dynamic
-
-              val constantable =
-                i.tpe.asType match
-                  case '[Int] => IdentType.Raw
-                  case '[Long] => IdentType.Raw
-                  case '[Short] => IdentType.Raw
-                  case '[Double] => IdentType.Raw
-                  case '[Float] => IdentType.Raw
-                  case '[Boolean] => IdentType.Raw
-                  case '[Byte] => IdentType.Raw
-                  case '[String] => IdentType.Raw
-                  case '[Quoted[Int]] => IdentType.Quoted
-                  case '[Quoted[Long]] => IdentType.Quoted
-                  case '[Quoted[Short]] => IdentType.Quoted
-                  case '[Quoted[Double]] => IdentType.Quoted
-                  case '[Quoted[Float]] => IdentType.Quoted
-                  case '[Quoted[Boolean]] => IdentType.Quoted
-                  case '[Quoted[Byte]] => IdentType.Quoted
-                  case '[Quoted[String]] => IdentType.Quoted
-                  case _ => IdentType.Dynamic
-
               if (isTermExternal(i))
-                constantable match
+                identType(i) match
                   case IdentType.Raw =>
                     println(s"The term: ${i.show} is external to the quote")
-                    Vase.Brandished('{ Constant(${i.asExpr}) })
+                    Vase.RuntimeExpression('{ Constant(${i.asExpr}) })
                   case IdentType.Quoted =>
                     println(s"The quotation: ${i.show} is external to the quote")
                     val quotedExpr = i.asExprOf[Quoted[_]]
-                    Vase.Brandished('{ ${quotedExpr}.ast })
+                    Vase.RuntimeExpression('{ ${quotedExpr}.ast })
                   case IdentType.Dynamic =>
                     report.throwError(s"Cannot vase a type of: ${Printer.TypeReprShortCode.show(i.tpe.widen)}. Must be a constant type or quotation of a constant type.")
               else
@@ -177,6 +89,16 @@ object MiniQuill:
             //case Unseal(Literal(ByteConstant(i))) => Constant(i)
             case Unseal(Literal(StringConstant(i))) => Constant(i)
 
+            // TODO need more sophisticated way of telling an external function e.g. foo.bar which would be Select(foo, "bar") etc...
+            case Unseal(ApplyMatroshkaTerm(id @ ExternalIdent(name))) =>
+              report.errorAndAbort(
+                """|Detected a function applied that was defined outside of quote { ... }.
+                   |In order to use it, apply it outside of quote { ... }, assign it to a variable,
+                   |and then use the variable inside of the quotation.
+                """.stripMargin,
+                id.pos
+              )
+
             case Unseal(Typed(inside /*Term*/, _)) => astParse(inside.asExpr)
             case _ => report.throwError(
               s"""
@@ -190,7 +112,7 @@ object MiniQuill:
 
       val quillAst: Ast = Parser.astParse(quotedRaw)
       val liveness =
-        if (containsVase(quillAst))
+        if (Ast.containsVase(quillAst))
           report.warning(s"Vase detected in the AST. Liveness will be dynamic. (${quillAst})")
           Liveness.Dynamic
         else
@@ -300,9 +222,9 @@ object MiniQuill:
 
     given liftableVase: NiceLiftable[Vase] with
       def lift =
-        case Vase.Brandished(content) => '{ Vase.Sheathed($content) }
+        case Vase.RuntimeExpression(content) => '{ Vase.RuntimeBinding($content) }
         // technically should not run into this case because a sheathed vase should not ever be lifted
-        case Vase.Sheathed(content) => '{ Vase.Sheathed(${content.expr}) }
+        case Vase.RuntimeBinding(content) => '{ Vase.RuntimeBinding(${content.expr}) }
 
     given liftableAst : NiceLiftable[Ast] with
       def lift =
